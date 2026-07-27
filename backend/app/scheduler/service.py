@@ -219,10 +219,11 @@ class ScheduledTaskService:
                 )
                 await self._task_repo.update_after_launch(
                     task["id"],
-                    # Parity with the success path: once tasks stay "running" until
-                    # handle_run_completion observes the real terminal outcome, so
-                    # cancel_stuck_once_tasks can reconcile them on restart.
-                    status="running",
+                    # Parity with the success path: reuse task_status computed at
+                    # lines 158-167 so the recovery branch stays in lockstep for
+                    # once/cron/manual-paused cases. Fall back to the raw lookup if
+                    # next_run_at itself raised before task_status was assigned.
+                    status=task_status if "task_status" in locals() else (task.get("status") or "enabled"),
                     next_run_at=next_at,
                     last_run_at=now,
                     last_run_id=_launch_run_result["run_id"],

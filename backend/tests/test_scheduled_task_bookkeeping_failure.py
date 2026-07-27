@@ -246,3 +246,54 @@ async def test_once_task_bookkeeping_failure_keeps_status_running(tmp_path):
         )
     finally:
         await close_engine()
+
+
+async def test_cron_task_bookkeeping_failure_keeps_status_enabled(tmp_path):
+    """Verify cron task stays 'enabled' (not 'running') after bookkeeping-failure recovery.
+
+    For cron tasks the success path sets task_status = 'enabled', and
+    handle_run_completion does NOT update the parent task status (it only
+    updates 'once' tasks). If the recovery branch incorrectly sets
+    status = 'running', the task would be permanently stuck because:
+    - claim_due_tasks requires lease_expires_at IS NOT NULL (update_after_launch
+      clears it to NULL) - so it can't reclaim the task
+    - cancel_stuck_once_tasks only sweeps 'once' tasks - so it can't help
+
+    This test documents the reclaimability invariant for cron tasks.
+    """
+    await init_engine_from_config(DatabaseConfig(backend="sqlite", sqlite_dir=str(tmp_path)))
+    try:
+        sf = get_session_factory()
+        assert sf is not None
+        task_repo = ScheduledTaskRepository(sf)
+        run_repo = _FailingUpdateStatusRunRepo(sf, fail_first_update=True)
+        launched: list = []
+        service = _make_service(task_repo, run_repo, launched)
+        task = await _seed_task(task_repo, "task-cron-bookkeeping-fail")
+        now = datetime.now(UTC)
+
+        # Dispatch: launch succeeds, but first update_status fails
+        result = await service.dispatch_task(dict(task), now=now, trigger="scheduled")
+
+        # Launch was called
+        assert len(launched) == 1
+        assert result["outcome"] == "failed"
+        assert result["run_id"] is not None, "run_id should be preserved"
+
+        # Slot is still occupied (run row is 'running')
+        assert await run_repo.has_active_runs("task-cron-bookkeeping-fail") is True
+
+        # The parent cron task's status must be 'enabled' (not 'running')
+        # so claim_due_tasks can reclaim it. If status stayed 'running',
+        # the task would be permanently stuck (claim requires lease_expires_at
+        # IS NOT NULL which update_after_launch clears, and cancel_stuck_once_tasks
+        # only sweeps 'once' tasks).
+        updated_task = await task_repo.get("task-cron-bookkeeping-fail", user_id="user-1")
+        assert updated_task is not None
+        assert updated_task["status"] == "enabled", (
+            f"Cron task should have status 'enabled' after recovery, got '{updated_task['status']}'. "
+            "With 'running', claim_due_tasks cannot reclaim the task and cancel_stuck_once_tasks "
+            "won't touch it (it only sweeps 'once' tasks)."
+        )
+    finally:
+        await close_engine()
