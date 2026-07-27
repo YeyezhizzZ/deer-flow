@@ -79,14 +79,23 @@ class Channel(ABC):
         max_retries: int,
         log_prefix: str | None = None,
         operation_name: str = "send",
+        non_retryable: tuple[type[Exception], ...] = (),
     ) -> T:
-        """Run an outbound send operation with the shared channel retry policy."""
+        """Run an outbound send operation with the shared channel retry policy.
+
+        Args:
+            non_retryable: Exceptions that should be raised immediately without retry.
+                          Used for deterministic failures (e.g., BadRequest for invalid HTML
+                          when the caller handles the fallback path).
+        """
         prefix = log_prefix or f"[{self.name}]"
         last_exc: Exception | None = None
         for attempt in range(max_retries):
             try:
                 return await operation()
             except Exception as exc:
+                if isinstance(exc, non_retryable):
+                    raise
                 last_exc = exc
                 if attempt < max_retries - 1:
                     delay = 2**attempt

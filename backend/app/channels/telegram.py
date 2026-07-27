@@ -321,13 +321,13 @@ class TelegramChannel(Channel):
                     send_message,
                     max_retries=_max_retries,
                     log_prefix="[Telegram]",
+                    non_retryable=(BadRequest,),
                 )
             except BadRequest:
                 if attempt == 0:
                     logger.debug("[Telegram] HTML parse rejected, falling back to plain text in chat=%s", chat_id)
                     continue
                 raise
-        return None
 
     async def send_file(self, msg: OutboundMessage, attachment: ResolvedAttachment) -> bool:
         if not self._application:
